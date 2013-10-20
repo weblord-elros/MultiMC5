@@ -362,7 +362,8 @@ void MainWindow::on_actionReportBug_triggered()
 
 void MainWindow::on_actionNews_triggered()
 {
-	openWebPage(QUrl("http://multimc.org/posts.html"));
+    openWebPage(QUrl("http://kopsy.tk"));
+    openWebPage(QUrl("http://multimc.org/posts.html"));
 }
 
 void MainWindow::on_actionAbout_triggered()
@@ -466,8 +467,6 @@ void MainWindow::doLogin(const QString &errorMsg)
 		return;
 
 	LoginDialog *loginDlg = new LoginDialog(this, errorMsg);
-	if (!m_selectedInstance->lastLaunch())
-		loginDlg->forceOnline();
 
 	loginDlg->exec();
 	if (loginDlg->result() == QDialog::Accepted)
@@ -492,7 +491,20 @@ void MainWindow::doLogin(const QString &errorMsg)
 				user = QString("Player");
 			m_activeLogin = {user, QString("Offline"), user, QString()};
 			m_activeInst = m_selectedInstance;
-			launchInstance(m_activeInst, m_activeLogin);
+
+            BaseUpdate *updateTask = m_activeInst->doUpdate();
+            if (!updateTask)
+            {
+                launchInstance(m_activeInst, m_activeLogin);
+            }
+            else
+            {
+                ProgressDialog tDialog(this);
+                connect(updateTask, SIGNAL(succeeded()), SLOT(onGameUpdateComplete()));
+                connect(updateTask, SIGNAL(failed(QString)), SLOT(onGameUpdateError(QString)));
+                tDialog.exec(updateTask);
+                delete updateTask;
+            }
 		}
 	}
 }
