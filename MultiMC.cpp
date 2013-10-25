@@ -265,6 +265,7 @@ void MultiMC::initGlobalSettings()
 
 	// Java Settings
 	m_settings->registerSetting(new Setting("JavaPath", ""));
+	m_settings->registerSetting(new Setting("LastHostname", ""));
 	m_settings->registerSetting(new Setting("JvmArgs", ""));
 
 	// Custom Commands
@@ -294,6 +295,7 @@ void MultiMC::initHttpMetaCache()
 	m_metacache->addBase("versions", QDir("versions").absolutePath());
 	m_metacache->addBase("libraries", QDir("libraries").absolutePath());
 	m_metacache->addBase("minecraftforge", QDir("mods/minecraftforge").absolutePath());
+	m_metacache->addBase("skins", QDir("accounts/skins").absolutePath());
 	m_metacache->Load();
 }
 

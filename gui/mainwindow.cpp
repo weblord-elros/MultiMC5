@@ -20,6 +20,7 @@
 
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
+#include "keyring.h"
 
 #include <QMenu>
 #include <QMessageBox>
@@ -57,6 +58,7 @@
 #include "logic/lists/JavaVersionList.h"
 
 #include "logic/net/LoginTask.h"
+
 #include "logic/BaseInstance.h"
 #include "logic/InstanceFactory.h"
 #include "logic/MinecraftProcess.h"
@@ -73,7 +75,7 @@
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
 {
-    MultiMCPlatform::fixWM_CLASS(this);
+	MultiMCPlatform::fixWM_CLASS(this);
 	ui->setupUi(this);
 	setWindowTitle(QString("MultiMC %1").arg(MMC->version().toString()));
 
@@ -232,15 +234,6 @@ void MainWindow::setCatBackground(bool enabled)
 	{
 		view->setStyleSheet(QString());
 	}
-}
-
-void MainWindow::instanceActivated(QModelIndex index)
-{
-	if (!index.isValid())
-		return;
-	BaseInstance *inst =
-		(BaseInstance *)index.data(InstanceList::InstancePointerRole).value<void *>();
-	doLogin();
 }
 
 void MainWindow::on_actionAddInstance_triggered()
@@ -453,12 +446,70 @@ void MainWindow::on_instanceView_customContextMenuRequested(const QPoint &pos)
 	instContextMenu->exec(view->mapToGlobal(pos));
 }
 */
+void MainWindow::instanceActivated(QModelIndex index)
+{
+	if (!index.isValid())
+		return;
+	BaseInstance *inst =
+		(BaseInstance *)index.data(InstanceList::InstancePointerRole).value<void *>();
+
+	bool autoLogin = MMC->settings()->get("AutoLogin").toBool();
+	if(autoLogin) doAutoLogin();
+	else doLogin();
+}
+
 void MainWindow::on_actionLaunchInstance_triggered()
 {
 	if (m_selectedInstance)
 	{
 		doLogin();
 	}
+}
+
+void MainWindow::doAutoLogin()
+{
+	if (!m_selectedInstance)
+		return;
+
+	Keyring * k = Keyring::instance();
+	QStringList accounts = k->getStoredAccounts("minecraft");
+
+	if(!accounts.isEmpty())
+	{
+		QString username = accounts[0];
+		QString password = k->getPassword("minecraft", username);
+
+		if(!password.isEmpty())
+		{
+			QLOG_INFO() << "Automatically logging in with stored account: " << username;
+			m_activeInst = m_selectedInstance;
+			doLogin(username, password);
+		}
+		else
+		{
+			QLOG_ERROR() << "Auto login set for account, but no password was found: " << username;
+			doLogin(tr("Auto login attempted, but no password is stored."));
+		}
+	}
+	else
+	{
+		QLOG_ERROR() << "Auto login set but no accounts were stored.";
+		doLogin(tr("Auto login attempted, but no accounts are stored."));
+	}
+}
+
+void MainWindow::doLogin(QString username, QString password)
+{
+	UserInfo uInfo{username, password};
+
+	ProgressDialog *tDialog = new ProgressDialog(this);
+	LoginTask *loginTask = new LoginTask(uInfo, tDialog);
+	connect(loginTask, SIGNAL(succeeded()), SLOT(onLoginComplete()),
+			Qt::QueuedConnection);
+	connect(loginTask, SIGNAL(failed(QString)), SLOT(doLogin(QString)),
+			Qt::QueuedConnection);
+
+	tDialog->exec(loginTask);
 }
 
 void MainWindow::doLogin(const QString &errorMsg)
@@ -473,16 +524,8 @@ void MainWindow::doLogin(const QString &errorMsg)
 	{
 		if (loginDlg->isOnline())
 		{
-			UserInfo uInfo{loginDlg->getUsername(), loginDlg->getPassword()};
-
-			ProgressDialog *tDialog = new ProgressDialog(this);
-			LoginTask *loginTask = new LoginTask(uInfo, tDialog);
-			connect(loginTask, SIGNAL(succeeded()), SLOT(onLoginComplete()),
-					Qt::QueuedConnection);
-			connect(loginTask, SIGNAL(failed(QString)), SLOT(doLogin(QString)),
-					Qt::QueuedConnection);
 			m_activeInst = m_selectedInstance;
-			tDialog->exec(loginTask);
+			doLogin(loginDlg->getUsername(), loginDlg->getPassword());
 		}
 		else
 		{
@@ -529,6 +572,46 @@ void MainWindow::onLoginComplete()
 		tDialog.exec(updateTask);
 		delete updateTask;
 	}
+
+	auto job = new DownloadJob("Player skin: " + m_activeLogin.player_name);
+
+	auto meta = MMC->metacache()->resolveEntry("skins", m_activeLogin.player_name + ".png");
+	job->addCacheDownload(QUrl("http://skins.minecraft.net/MinecraftSkins/" + m_activeLogin.player_name + ".png"), meta);
+	meta->stale = true;
+
+	job->start();
+	auto filename = MMC->metacache()->resolveEntry("skins", "skins.json")->getFullPath();
+	QFile listFile(filename);
+
+	// Add skin mapping
+	QByteArray data;
+	{
+		if(!listFile.open(QIODevice::ReadWrite))
+		{
+			QLOG_ERROR() << "Failed to open/make skins list JSON";
+			return;
+		}
+
+		data = listFile.readAll();
+	}
+
+	QJsonParseError jsonError;
+	QJsonDocument jsonDoc = QJsonDocument::fromJson(data, &jsonError);
+	QJsonObject root = jsonDoc.object();
+	QJsonObject mappings = root.value("mappings").toObject();
+	QJsonArray usernames = mappings.value(m_activeLogin.username).toArray();
+
+	if(!usernames.contains(m_activeLogin.player_name))
+	{
+		usernames.prepend(m_activeLogin.player_name);
+		mappings[m_activeLogin.username] = usernames;
+		root["mappings"] = mappings;
+		jsonDoc.setObject(root);
+
+		// QJson hack - shouldn't have to clear the file every time a save happens
+		listFile.resize(0);
+		listFile.write(jsonDoc.toJson());
+	}
 }
 
 void MainWindow::onGameUpdateComplete()
@@ -559,11 +642,18 @@ void MainWindow::launchInstance(BaseInstance *instance, LoginResponse response)
 		this->hide();
 	}
 
+
 	console = new ConsoleWindow(proc);
-	console->show();
+
 	connect(proc, SIGNAL(log(QString, MessageLevel::Enum)), console,
 			SLOT(write(QString, MessageLevel::Enum)));
-	connect(proc, SIGNAL(ended()), this, SLOT(instanceEnded()));
+	connect(proc, SIGNAL(ended(BaseInstance*)), this, SLOT(instanceEnded(BaseInstance*)));
+
+	if (instance->settings().get("ShowConsole").toBool())
+	{
+		console->show();
+	}
+
 	proc->setLogin(response.username, response.session_id);
 	proc->launch();
 }
@@ -627,8 +717,9 @@ void MainWindow::on_actionChangeInstMCVersion_triggered()
 			auto result = QMessageBox::warning(
 				this, tr("Are you sure?"),
 				tr("This will remove any library/version customization you did previously. "
-				   "This includes things like Forge install and similar."), QMessageBox::Ok, QMessageBox::Abort);
-			if(result != QMessageBox::Ok)
+				   "This includes things like Forge install and similar."),
+				QMessageBox::Ok, QMessageBox::Abort);
+			if (result != QMessageBox::Ok)
 				return;
 		}
 		m_selectedInstance->setIntendedVersionId(vselect.selectedVersion()->descriptor());
@@ -712,36 +803,63 @@ void MainWindow::on_actionEditInstNotes_triggered()
 	}
 }
 
-void MainWindow::instanceEnded()
+void MainWindow::instanceEnded(BaseInstance *instance)
 {
 	this->show();
 	ui->actionLaunchInstance->setEnabled(m_selectedInstance);
+
+	if (instance->settings().get("AutoCloseConsole").toBool())
+	{
+		console->close();
+	}
 }
 
 void MainWindow::checkSetDefaultJava()
 {
-	QString currentJavaPath = MMC->settings()->get("JavaPath").toString();
-	if(currentJavaPath.isEmpty())
+	bool askForJava = false;
 	{
-		QLOG_DEBUG() << "Java path not set, showing Java selection dialog...";
+		QString currentHostName = QHostInfo::localHostName();
+		QString oldHostName = MMC->settings()->get("LastHostname").toString();
+		if (currentHostName != oldHostName)
+		{
+			MMC->settings()->set("LastHostname", currentHostName);
+			askForJava = true;
+		}
+	}
+
+	{
+		QString currentJavaPath = MMC->settings()->get("JavaPath").toString();
+		if (currentJavaPath.isEmpty())
+		{
+			askForJava = true;
+		}
+	}
+
+	if (askForJava)
+	{
+		QLOG_DEBUG() << "Java path needs resetting, showing Java selection dialog...";
 
 		JavaVersionPtr java;
 
-		VersionSelectDialog vselect(MMC->javalist().get(), tr("First run: select a Java version"), this, false);
+		VersionSelectDialog vselect(MMC->javalist().get(), tr("Select a Java version"), this,
+									false);
 		vselect.setResizeOn(2);
 		vselect.exec();
 
-		if (!vselect.selectedVersion())
+		if (vselect.selectedVersion())
+			java = std::dynamic_pointer_cast<JavaVersion>(vselect.selectedVersion());
+		else
 		{
-			QMessageBox::warning(
-						this, tr("Invalid version selected"), tr("You didn't select a valid Java version, so MultiMC will select the default. "
-																 "You can change this in the settings dialog."));
-
+			QMessageBox::warning(this, tr("Invalid version selected"),
+								 tr("You didn't select a valid Java version, so MultiMC will "
+									"select the default. "
+									"You can change this in the settings dialog."));
 			JavaUtils ju;
 			java = ju.GetDefaultJava();
 		}
-
-		java = std::dynamic_pointer_cast<JavaVersion>(vselect.selectedVersion());
-		MMC->settings()->set("JavaPath", java->path);
+		if(java)
+			MMC->settings()->set("JavaPath", java->path);
+		else
+			MMC->settings()->set("JavaPath", QString("java"));
 	}
 }

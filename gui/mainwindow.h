@@ -99,6 +99,8 @@ private slots:
 	void on_actionEditInstNotes_triggered();
 
 	void doLogin(const QString &errorMsg = "");
+	void doLogin(QString username, QString password);
+	void doAutoLogin();
 
 	void onLoginComplete();
 
@@ -110,7 +112,7 @@ private slots:
 
 	void on_actionChangeInstLWJGLVersion_triggered();
 
-	void instanceEnded();
+	void instanceEnded(BaseInstance *instance);
 
 	void on_actionInstanceSettings_triggered();
 
