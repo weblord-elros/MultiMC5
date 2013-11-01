@@ -50,6 +50,7 @@
 #include "gui/consolewindow.h"
 #include "gui/instancesettings.h"
 #include "gui/platform.h"
+#include "gui/CustomMessageBox.h"
 
 #include "logic/lists/InstanceList.h"
 #include "logic/lists/MinecraftVersionList.h"
@@ -155,6 +156,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 	// FIXME: stop using POINTERS everywhere
 	connect(MMC->instances().get(), SIGNAL(dataIsInvalid()), SLOT(selectionBad()));
 
+	m_statusLeft = new QLabel(tr("Instance type"), this);
+	m_statusRight = new QLabel(tr("Assets information"), this);
+	m_statusRight->setAlignment(Qt::AlignRight);
+	statusBar()->addPermanentWidget(m_statusLeft, 1);
+	statusBar()->addPermanentWidget(m_statusRight, 0);
+
 	// run the things that load and download other things... FIXME: this is NOT the place
 	// FIXME: invisible actions in the background = NOPE.
 	{
@@ -168,6 +175,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 			MMC->lwjgllist()->loadList();
 		}
 		assets_downloader = new OneSixAssets();
+		connect(assets_downloader, SIGNAL(indexStarted()), SLOT(assetsIndexStarted()));
+		connect(assets_downloader, SIGNAL(filesStarted()), SLOT(assetsFilesStarted()));
+		connect(assets_downloader, SIGNAL(filesProgress(int, int, int)),
+				SLOT(assetsFilesProgress(int, int, int)));
+		connect(assets_downloader, SIGNAL(failed()), SLOT(assetsFailed()));
+		connect(assets_downloader, SIGNAL(finished()), SLOT(assetsFinished()));
 		assets_downloader->start();
 	}
 }
@@ -269,19 +282,25 @@ void MainWindow::on_actionAddInstance_triggered()
 		return;
 
 	case InstanceFactory::InstExists:
+	{
 		errorMsg += "An instance with the given directory name already exists.";
-		QMessageBox::warning(this, "Error", errorMsg);
+		CustomMessageBox::selectable(this, tr("Error"), errorMsg, QMessageBox::Warning)->show();
 		break;
+	}
 
 	case InstanceFactory::CantCreateDir:
+	{
 		errorMsg += "Failed to create the instance directory.";
-		QMessageBox::warning(this, "Error", errorMsg);
+		CustomMessageBox::selectable(this, tr("Error"), errorMsg, QMessageBox::Warning)->show();
 		break;
+	}
 
 	default:
+	{
 		errorMsg += QString("Unknown instance loader error %1").arg(error);
-		QMessageBox::warning(this, "Error", errorMsg);
+		CustomMessageBox::selectable(this, tr("Error"), errorMsg, QMessageBox::Warning)->show();
 		break;
+	}
 	}
 }
 
@@ -376,9 +395,10 @@ void MainWindow::on_actionDeleteInstance_triggered()
 {
 	if (m_selectedInstance)
 	{
-		int response = QMessageBox::question(
-			this, "CAREFUL", QString("This is permanent! Are you sure?\nAbout to delete: ") +
-								 m_selectedInstance->name());
+		auto response = CustomMessageBox::selectable(this, tr("CAREFUL"),
+													 tr("This is permanent! Are you sure?\nAbout to delete: ")
+													 + m_selectedInstance->name(),
+													 QMessageBox::Question, QMessageBox::Yes | QMessageBox::No)->exec();
 		if (response == QMessageBox::Yes)
 		{
 			m_selectedInstance->nuke();
@@ -434,6 +454,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
 	//	settings->getConfig().setValue("MainWindowGeometry", saveGeometry());
 	//	settings->getConfig().setValue("MainWindowState", saveState());
 	QMainWindow::closeEvent(event);
+	QApplication::exit();
 }
 /*
 void MainWindow::on_instanceView_customContextMenuRequested(const QPoint &pos)
@@ -454,8 +475,10 @@ void MainWindow::instanceActivated(QModelIndex index)
 		(BaseInstance *)index.data(InstanceList::InstancePointerRole).value<void *>();
 
 	bool autoLogin = MMC->settings()->get("AutoLogin").toBool();
-	if(autoLogin) doAutoLogin();
-	else doLogin();
+	if (autoLogin)
+		doAutoLogin();
+	else
+		doLogin();
 }
 
 void MainWindow::on_actionLaunchInstance_triggered()
@@ -471,15 +494,15 @@ void MainWindow::doAutoLogin()
 	if (!m_selectedInstance)
 		return;
 
-	Keyring * k = Keyring::instance();
+	Keyring *k = Keyring::instance();
 	QStringList accounts = k->getStoredAccounts("minecraft");
 
-	if(!accounts.isEmpty())
+	if (!accounts.isEmpty())
 	{
 		QString username = accounts[0];
 		QString password = k->getPassword("minecraft", username);
 
-		if(!password.isEmpty())
+		if (!password.isEmpty())
 		{
 			QLOG_INFO() << "Automatically logging in with stored account: " << username;
 			m_activeInst = m_selectedInstance;
@@ -487,7 +510,8 @@ void MainWindow::doAutoLogin()
 		}
 		else
 		{
-			QLOG_ERROR() << "Auto login set for account, but no password was found: " << username;
+			QLOG_ERROR() << "Auto login set for account, but no password was found: "
+						 << username;
 			doLogin(tr("Auto login attempted, but no password is stored."));
 		}
 	}
@@ -504,10 +528,8 @@ void MainWindow::doLogin(QString username, QString password)
 
 	ProgressDialog *tDialog = new ProgressDialog(this);
 	LoginTask *loginTask = new LoginTask(uInfo, tDialog);
-	connect(loginTask, SIGNAL(succeeded()), SLOT(onLoginComplete()),
-			Qt::QueuedConnection);
-	connect(loginTask, SIGNAL(failed(QString)), SLOT(doLogin(QString)),
-			Qt::QueuedConnection);
+	connect(loginTask, SIGNAL(succeeded()), SLOT(onLoginComplete()), Qt::QueuedConnection);
+	connect(loginTask, SIGNAL(failed(QString)), SLOT(doLogin(QString)), Qt::QueuedConnection);
 
 	tDialog->exec(loginTask);
 }
@@ -573,10 +595,13 @@ void MainWindow::onLoginComplete()
 		delete updateTask;
 	}
 
-	auto job = new DownloadJob("Player skin: " + m_activeLogin.player_name);
+	auto job = new NetJob("Player skin: " + m_activeLogin.player_name);
 
 	auto meta = MMC->metacache()->resolveEntry("skins", m_activeLogin.player_name + ".png");
-	job->addCacheDownload(QUrl("http://skins.minecraft.net/MinecraftSkins/" + m_activeLogin.player_name + ".png"), meta);
+	auto action = CacheDownload::make(
+		QUrl("http://skins.minecraft.net/MinecraftSkins/" + m_activeLogin.player_name + ".png"),
+		meta);
+	job->addNetAction(action);
 	meta->stale = true;
 
 	job->start();
@@ -586,7 +611,7 @@ void MainWindow::onLoginComplete()
 	// Add skin mapping
 	QByteArray data;
 	{
-		if(!listFile.open(QIODevice::ReadWrite))
+		if (!listFile.open(QIODevice::ReadWrite))
 		{
 			QLOG_ERROR() << "Failed to open/make skins list JSON";
 			return;
@@ -601,7 +626,7 @@ void MainWindow::onLoginComplete()
 	QJsonObject mappings = root.value("mappings").toObject();
 	QJsonArray usernames = mappings.value(m_activeLogin.username).toArray();
 
-	if(!usernames.contains(m_activeLogin.player_name))
+	if (!usernames.contains(m_activeLogin.player_name))
 	{
 		usernames.prepend(m_activeLogin.player_name);
 		mappings[m_activeLogin.username] = usernames;
@@ -621,7 +646,7 @@ void MainWindow::onGameUpdateComplete()
 
 void MainWindow::onGameUpdateError(QString error)
 {
-	QMessageBox::warning(this, "Error updating instance", error);
+	CustomMessageBox::selectable(this, tr("Error updating instance"), error, QMessageBox::Warning)->show();
 }
 
 void MainWindow::launchInstance(BaseInstance *instance, LoginResponse response)
@@ -642,12 +667,11 @@ void MainWindow::launchInstance(BaseInstance *instance, LoginResponse response)
 		this->hide();
 	}
 
-
 	console = new ConsoleWindow(proc);
 
 	connect(proc, SIGNAL(log(QString, MessageLevel::Enum)), console,
 			SLOT(write(QString, MessageLevel::Enum)));
-	connect(proc, SIGNAL(ended(BaseInstance*)), this, SLOT(instanceEnded(BaseInstance*)));
+	connect(proc, SIGNAL(ended(BaseInstance *)), this, SLOT(instanceEnded(BaseInstance *)));
 
 	if (instance->settings().get("ShowConsole").toBool())
 	{
@@ -691,9 +715,9 @@ void MainWindow::on_actionMakeDesktopShortcut_triggered()
 						 QStringList() << "-dl" << QDir::currentPath() << "test", name,
 						 "application-x-octet-stream");
 
-	QMessageBox::warning(
-		this, tr("Not useful"),
-		tr("A Dummy Shortcut was created. it will not do anything productive"));
+	CustomMessageBox::selectable(this, tr("Not useful"),
+								 tr("A Dummy Shortcut was created. it will not do anything productive"),
+								 QMessageBox::Warning)->show();
 }
 
 // BrowserDialog
@@ -714,11 +738,11 @@ void MainWindow::on_actionChangeInstMCVersion_triggered()
 	{
 		if (m_selectedInstance->versionIsCustom())
 		{
-			auto result = QMessageBox::warning(
-				this, tr("Are you sure?"),
-				tr("This will remove any library/version customization you did previously. "
-				   "This includes things like Forge install and similar."),
-				QMessageBox::Ok, QMessageBox::Abort);
+			auto result = CustomMessageBox::selectable(this, tr("Are you sure?"),
+										 tr("This will remove any library/version customization you did previously. "
+											"This includes things like Forge install and similar."),
+										 QMessageBox::Warning, QMessageBox::Ok, QMessageBox::Abort)->exec();
+
 			if (result != QMessageBox::Ok)
 				return;
 		}
@@ -766,8 +790,7 @@ void MainWindow::instanceChanged(const QModelIndex &current, const QModelIndex &
 			m_selectedInstance->menuActionEnabled("actionEditInstMods"));
 		ui->actionChangeInstMCVersion->setEnabled(
 			m_selectedInstance->menuActionEnabled("actionChangeInstMCVersion"));
-		statusBar()->clearMessage();
-		statusBar()->showMessage(m_selectedInstance->getStatusbarDescription());
+		m_statusLeft->setText(m_selectedInstance->getStatusbarDescription());
 		auto ico = MMC->icons()->getIcon(iconKey);
 		ui->actionChangeInstIcon->setIcon(ico);
 	}
@@ -850,16 +873,47 @@ void MainWindow::checkSetDefaultJava()
 			java = std::dynamic_pointer_cast<JavaVersion>(vselect.selectedVersion());
 		else
 		{
-			QMessageBox::warning(this, tr("Invalid version selected"),
-								 tr("You didn't select a valid Java version, so MultiMC will "
-									"select the default. "
-									"You can change this in the settings dialog."));
+			CustomMessageBox::selectable(this, tr("Invalid version selected"),
+										 tr("You didn't select a valid Java version, so MultiMC will "
+											"select the default. "
+											"You can change this in the settings dialog."),
+										 QMessageBox::Warning)->show();
+
 			JavaUtils ju;
 			java = ju.GetDefaultJava();
 		}
-		if(java)
+		if (java)
 			MMC->settings()->set("JavaPath", java->path);
 		else
 			MMC->settings()->set("JavaPath", QString("java"));
 	}
+}
+
+void MainWindow::assetsIndexStarted()
+{
+	m_statusRight->setText(tr("Checking assets..."));
+}
+
+void MainWindow::assetsFilesStarted()
+{
+	m_statusRight->setText(tr("Downloading assets..."));
+}
+
+void MainWindow::assetsFilesProgress(int succeeded, int failed, int total)
+{
+	QString status = tr("Downloading assets: %1 / %2").arg(succeeded + failed).arg(total);
+	if (failed > 0)
+		status += tr(" (%1 failed)").arg(failed);
+	status += tr("...");
+	m_statusRight->setText(status);
+}
+
+void MainWindow::assetsFailed()
+{
+	m_statusRight->setText(tr("Failed to update assets."));
+}
+
+void MainWindow::assetsFinished()
+{
+	m_statusRight->setText(tr("Assets up to date."));
 }
