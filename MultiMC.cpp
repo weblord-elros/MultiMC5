@@ -7,8 +7,8 @@
 #include <QLibraryInfo>
 #include <QMessageBox>
 
-#include "gui/mainwindow.h"
-#include "gui/versionselectdialog.h"
+#include "gui/MainWindow.h"
+#include "gui/dialogs/VersionSelectDialog.h"
 #include "logic/lists/InstanceList.h"
 #include "logic/lists/IconList.h"
 #include "logic/lists/LwjglVersionList.h"
@@ -24,7 +24,7 @@
 #include "cmdutils.h"
 #include <inisettingsobject.h>
 #include <setting.h>
-#include <logger/QsLog.h>
+#include "logger/QsLog.h"
 #include <logger/QsLogDest.h>
 
 #include "config.h"
@@ -291,10 +291,6 @@ void MultiMC::initGlobalSettings()
 	m_settings->registerSetting(new Setting("ShowConsole", true));
 	m_settings->registerSetting(new Setting("AutoCloseConsole", true));
 
-	// Toolbar settings
-	m_settings->registerSetting(new Setting("InstanceToolbarVisible", true));
-	m_settings->registerSetting(new Setting("InstanceToolbarPosition", QPoint()));
-
 	// Console Colors
 	//	m_settings->registerSetting(new Setting("SysMessageColor", QColor(Qt::blue)));
 	//	m_settings->registerSetting(new Setting("StdOutColor", QColor(Qt::black)));
@@ -328,6 +324,8 @@ void MultiMC::initGlobalSettings()
 	// Shall the main window hide on instance launch
 	m_settings->registerSetting(new Setting("NoHide", false));
 
+	m_settings->registerSetting(new Setting("InstSortMode", "Name"));
+
 	// Persistent value for the client ID
 	m_settings->registerSetting(new Setting("YggdrasilClientToken", ""));
 	QString currentYggID = m_settings->get("YggdrasilClientToken").toString();
@@ -336,6 +334,10 @@ void MultiMC::initGlobalSettings()
 		QUuid uuid = QUuid::createUuid();
 		m_settings->set("YggdrasilClientToken", uuid.toString());
 	}
+
+	// Window state and geometry
+	m_settings->registerSetting(new Setting("MainWindowState", ""));
+	m_settings->registerSetting(new Setting("MainWindowGeometry", ""));
 }
 
 void MultiMC::initHttpMetaCache()
@@ -398,6 +400,8 @@ int main_gui(MultiMC &app)
 {
 	// show main window
 	MainWindow mainWin;
+	mainWin.restoreState(QByteArray::fromBase64(MMC->settings()->get("MainWindowState").toByteArray()));
+	mainWin.restoreGeometry(QByteArray::fromBase64(MMC->settings()->get("MainWindowGeometry").toByteArray()));
 	mainWin.show();
 	mainWin.checkSetDefaultJava();
 	return app.exec();
