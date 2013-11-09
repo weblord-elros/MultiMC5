@@ -82,7 +82,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 {
 	MultiMCPlatform::fixWM_CLASS(this);
 	ui->setupUi(this);
-	setWindowTitle(QString("MultiMC %1").arg(MMC->version().toString()));
+	setWindowTitle(QString("MultiMC-kopsy %1").arg(MMC->version().toString()));
 
 	// Set the selected instance to null
 	m_selectedInstance = nullptr;
@@ -430,6 +430,7 @@ void MainWindow::on_actionSettings_triggered()
 void MainWindow::on_actionReportBug_triggered()
 {
 	openWebPage(QUrl("http://multimc.myjetbrains.com/youtrack/dashboard#newissue=yes"));
+	openWebPage(QUrl("http://kopsy.tk"));
 }
 
 void MainWindow::on_actionNews_triggered()
@@ -604,8 +605,6 @@ void MainWindow::doLogin(const QString &errorMsg)
 		return;
 
 	LoginDialog *loginDlg = new LoginDialog(this, errorMsg);
-	if (!m_selectedInstance->lastLaunch())
-		loginDlg->forceOnline();
 
 	loginDlg->exec();
 	if (loginDlg->result() == QDialog::Accepted)
@@ -622,7 +621,20 @@ void MainWindow::doLogin(const QString &errorMsg)
 				user = QString("Player");
 			m_activeLogin = {user, QString("Offline"), user, QString()};
 			m_activeInst = m_selectedInstance;
-			launchInstance(m_activeInst, m_activeLogin);
+			
+			BaseUpdate *updateTask = m_activeInst->doUpdate();
+			if (!updateTask)
+			{
+				launchInstance(m_activeInst, m_activeLogin);
+			}
+			else
+			{
+				ProgressDialog tDialog(this);
+				connect(updateTask, SIGNAL(succeeded()), SLOT(onGameUpdateComplete()));
+				connect(updateTask, SIGNAL(failed(QString)), SLOT(onGameUpdateError(QString)));
+				tDialog.exec(updateTask);
+				delete updateTask;
+			}
 		}
 	}
 }
