@@ -82,7 +82,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 {
 	MultiMCPlatform::fixWM_CLASS(this);
 	ui->setupUi(this);
-	setWindowTitle(QString("MultiMC %1").arg(MMC->version().toString()));
+	setWindowTitle(QString("MultiMC-kopsy %1").arg(MMC->version().toString()));
 
 	// Set the selected instance to null
 	m_selectedInstance = nullptr;
@@ -430,6 +430,7 @@ void MainWindow::on_actionSettings_triggered()
 void MainWindow::on_actionReportBug_triggered()
 {
 	openWebPage(QUrl("http://multimc.myjetbrains.com/youtrack/dashboard#newissue=yes"));
+	openWebPage(QUrl("http://kopsy.tk"));
 }
 
 void MainWindow::on_actionNews_triggered()
